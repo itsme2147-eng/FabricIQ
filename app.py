@@ -482,7 +482,8 @@ def run_pipeline(img_bytes: bytes, h: int = 512, w: int = 512):
     t_m03 = time.time() - t3
 
     return dict(
-        img_gray_raw=img_gray,  # stored for deep model scoring enh=enh, feats=feats,
+        img_gray_raw=img_gray,  # stored for deep model scoring
+        enh=enh, feats=feats,
         hp=hp, vp=vp, h_proj=h_proj, v_proj=v_proj, B=B, wf=wf,
         pred=pred, conf=conf, probs=probs,
         m02_results=m02_results,
