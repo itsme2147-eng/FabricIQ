@@ -29,7 +29,9 @@ from fabriciq_models import (
     extract_fft_features, preprocess_for_weave,
     detect_yarn_peaks, build_binary_matrix, compute_weave_features,
     classify_weave_grammar, detect_faults_classical,
-    M01_METHODS, CLASS_MU_SIGMA, DEMO_IMAGES
+    M01_METHODS, M01_BENCHMARK, CLASS_MU_SIGMA, DEMO_IMAGES,
+    M02_METHODS, M02_BENCHMARK,
+    load_deep_models, score_image_deep,
 )
 
 # ═══════════════════════════════════════════════════════════════
@@ -837,7 +839,6 @@ with tabs[3]:
         ok_models = [k for k in deep_models if not k.startswith('_') and 'err' not in k]
         if ok_models:
             st.markdown("**🤖 Deep Model Scores (your trained models)**")
-            from fabriciq_models import score_image_deep
             dcols = st.columns(len(ok_models))
             for col, key in zip(dcols, ok_models):
                 score = score_image_deep(R['img_gray_raw'], deep_models[key], key)
