@@ -1,30 +1,6 @@
-# 🧵 FabricIQ — Integrated Fabric Quality Intelligence  v2 (fixed)
+# 🧵 FabricIQ — Integrated Fabric Quality Intelligence
 
 **PhD Research Demonstration Dashboard · Streamlit Web App**
-
----
-
-## 🐛 Bugs Fixed in v2
-
-| # | Issue | Fix |
-|---|-------|-----|
-| 1 | `TypeError: update_layout() got multiple values for keyword argument 'xaxis'` | Removed `xaxis`/`yaxis` from `PLOTLY_LAYOUT` dict; applied via `update_xaxes()`/`update_yaxes()` |
-| 2 | Module 01 default method was Xu(1996) FFT | **Ratio-Consistency** set as default — confirmed best by your study (MAE=3.48) |
-| 3 | Module 02 Plain/Twill mismatch | Rebuilt Stage 1 grammar with `mean_float` as primary (d'=1.86, physically guaranteed) |
-| 4 | Module 03 trained models unused | Added sidebar loader + `score_image_deep()` for FAE, MobileNet, EfficientNet |
-
----
-
-## 🚀 Deploy on Streamlit Cloud (Free)
-
-```
-1. Push this folder to GitHub (3 files: app.py, fabriciq_models.py, requirements.txt)
-2. Go to https://streamlit.io/cloud → New app
-3. Select your repo, set main file = app.py
-4. Click Deploy → live URL in ~90 seconds
-```
-
----
 
 ## 📁 Repository Structure
 
@@ -59,17 +35,8 @@ FabricIQ/
 | Xu (1996) FFT | 13.52 | 5th (baseline) |
 | Shi (2014) Wavelet | — | ⚠️ overestimates ×3 |
 
-### Module 02 — Weave Pattern Recognition (Grammar v5.1 fixed)
+### Module 02 — Weave Pattern Recognition (Grammar v5.1)
 
-**Root cause of Plain/Twill mismatch:**
-- CSI: Plain=0.312 vs 2/1T=0.301 → d'=0.11 (useless separator)
-- YIDF: Plain=0.711 vs 2/1T=0.676 → d'=0.33 (too much overlap)
-
-**Fix applied:**
-- Stage 1 primary: `mean_float` (d'=1.86) — physically guaranteed
-  - Plain weave by definition: every yarn crosses → float=1.0
-  - Twill by definition: floats exist → float ≥ 2.0
-- Stage 2 (2/1T vs 3/1T): coherence (d'=3.15) — unchanged, works well
 
 ### Module 03 — Fault Detection
 | Model | Silhouette ↑ | Speed |
