@@ -225,12 +225,20 @@ with st.sidebar:
         uploaded = st.file_uploader("Choose image", type=['jpg','jpeg','png','bmp'],
                                      label_visibility="collapsed")
         if uploaded:
-            pil_img = Image.open(uploaded).convert('L')
-            img_gray = cv2.resize(np.array(pil_img), (512, 512))
+            raw_bytes = uploaded.read()
+            arr       = np.frombuffer(raw_bytes, np.uint8)
+            img_bgr   = cv2.imdecode(arr, cv2.IMREAD_COLOR)   # keep full colour
+            img_rgb   = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+            img_rgb   = cv2.resize(img_rgb, (512, 512))
+            img_gray  = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2GRAY)
+            st.session_state['img_rgb512'] = img_rgb            # store RGB for M03
             st.success(f"✅ {uploaded.name} loaded")
     else:
         demo_choice = st.selectbox("Demo fabric:", list(DEMO_IMAGES.keys()))
-        img_gray = DEMO_IMAGES[demo_choice]()
+        img_gray    = DEMO_IMAGES[demo_choice]()
+        # Demo images are grayscale — convert to fake RGB (gray replicated 3ch)
+        img_rgb_demo = cv2.cvtColor(img_gray, cv2.COLOR_GRAY2RGB)
+        st.session_state['img_rgb512'] = img_rgb_demo
         st.success(f"✅ Synthetic: {demo_choice}")
 
     st.markdown("---")
@@ -443,8 +451,14 @@ if img_gray is None:
 # COMPUTE (cached per image)
 # ═══════════════════════════════════════════════════════════════
 @st.cache_data(show_spinner=False)
-def run_pipeline(img_bytes: bytes, h: int = 512, w: int = 512):
+def run_pipeline(img_bytes: bytes, h: int = 512, w: int = 512,
+                 rgb_bytes: bytes = b'', rh: int = 512, rw: int = 3):
     img = np.frombuffer(img_bytes, np.uint8).reshape(h, w)
+    # Reconstruct RGB for colour-aware fault detection
+    if rgb_bytes:
+        img_rgb_m03 = np.frombuffer(rgb_bytes, np.uint8).reshape(512, 512, 3)
+    else:
+        img_rgb_m03 = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
 
     # Preprocessing
     t0 = time.time()
@@ -476,9 +490,9 @@ def run_pipeline(img_bytes: bytes, h: int = 512, w: int = 512):
             m02_results[m02_name] = {'pred': 'Error', 'conf': 0.0, 'probs': {}}
     t_m02 = time.time() - t2
 
-    # M03
+    # M03 — use RGB for colour-aware fault detection
     t3 = time.time()
-    scores, hmap, verdict = detect_faults_classical(img)
+    scores, hmap, verdict = detect_faults_classical(img_rgb_m03)
     t_m03 = time.time() - t3
 
     return dict(
@@ -493,7 +507,13 @@ def run_pipeline(img_bytes: bytes, h: int = 512, w: int = 512):
     )
 
 with st.spinner("⚙️ Running FabricIQ analysis pipeline..."):
-    result = run_pipeline(img_gray.tobytes(), img_gray.shape[0], img_gray.shape[1])
+    _rgb512 = st.session_state.get('img_rgb512', None)
+    if _rgb512 is None:
+        _rgb512 = cv2.cvtColor(img_gray, cv2.COLOR_GRAY2RGB)
+    result = run_pipeline(
+        img_gray.tobytes(), img_gray.shape[0], img_gray.shape[1],
+        rgb_bytes=_rgb512.tobytes(), rh=512, rw=3,
+    )
 
 R = result
 
