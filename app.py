@@ -255,9 +255,9 @@ with st.sidebar:
     with st.expander("🔍 Module 03 — Fault Detection", expanded=False):
         m03_selected = st.multiselect(
             "Detectors:",
-            ['Isolation Forest', 'Local Outlier Factor', 'One-Class SVM',
-             'Classical Ensemble', 'Spatial Anomaly'],
-            default=['Isolation Forest', 'Local Outlier Factor', 'One-Class SVM', 'Classical Ensemble'])
+            ['Color Anomaly', 'Structural Fault', 'Texture Irregularity', 'Classical Ensemble'],
+            default=['Color Anomaly', 'Structural Fault', 'Texture Irregularity', 'Classical Ensemble'],
+            help="Color=dye patches/stains  |  Structural=holes/tears  |  Texture=missing threads")
         fault_threshold = st.slider("Alert threshold", 0.20, 0.80, 0.50, 0.05,
                                      help="Ensemble score above this = FAULT")
 
@@ -372,7 +372,7 @@ border:1px solid #1e2b45;border-radius:6px;padding:10px;margin-bottom:8px">
     st.caption("Dataset: 616 fabric images")
     st.caption("Best M01: Ratio-Consistency (MAE=3.48) ⭐")
     st.caption("Best M02: Grammar v5.1 (≥75% on 616 real scans)")
-    st.caption("Best M03: Isolation Forest (Silhouette=0.543) ⭐")
+    st.caption("Best M03: Physics detector (Color+Structural+Texture) → FAULT on all 6 corpus fault images")
     st.markdown("---")
     st.caption("FabricIQ · PhD Research Dashboard")
     st.caption("Streamlit · Open Source · No install")
@@ -773,24 +773,31 @@ with tabs[2]:
             title=dict(text='Structural Feature Profile vs Class References', font=dict(color='#94a3b8', size=11)))
         st.plotly_chart(fig_radar, use_container_width=True)
 
-    # Multi-method comparison table
+    # Multi-method comparison table — filtered by sidebar selection
     st.divider()
     st.markdown("**📊 Weave Classification Method Comparison**")
     m02_comp_rows = []
+    # Only show methods that user selected in sidebar
+    selected_m02 = m02_selected if 'm02_selected' in dir() else list(M02_METHODS.keys())
     for m_name, m_res in R.get('m02_results', {}).items():
+        if m_name not in selected_m02:
+            continue   # ← RESPECT SIDEBAR SELECTION
         bench = M02_BENCHMARK.get(m_name, {})
+        is_best = '⭐' in m_name
         m02_comp_rows.append({
             'Method': m_name,
-            'Prediction': m_res.get('pred','—'),
-            'Confidence': f"{m_res.get('conf',0):.0%}",
-            'Plain %': f"{m_res.get('probs',{}).get('Plain Weave',0):.0%}",
-            '2/1T %':  f"{m_res.get('probs',{}).get('2/1 Twill',0):.0%}",
-            '3/1T %':  f"{m_res.get('probs',{}).get('3/1 Twill',0):.0%}",
-            'Accuracy': bench.get('accuracy','—'),
+            'Prediction': m_res.get('pred', '—'),
+            'Confidence': f"{m_res.get('conf', 0):.0%}",
+            'Plain Weave': f"{m_res.get('probs', {}).get('Plain Weave', 0):.0%}",
+            '2/1 Twill':   f"{m_res.get('probs', {}).get('2/1 Twill',   0):.0%}",
+            '3/1 Twill':   f"{m_res.get('probs', {}).get('3/1 Twill',   0):.0%}",
+            'Corpus Accuracy': bench.get('accuracy', '—'),
+            'Primary Feature': bench.get('stage1_feat', '—'),
         })
     if m02_comp_rows:
-        import pandas as _pd
-        st.dataframe(_pd.DataFrame(m02_comp_rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(m02_comp_rows), use_container_width=True, hide_index=True)
+    else:
+        st.info("Select at least one method in the sidebar to see comparison.")
 
     st.divider()
     # Interlacement matrix
@@ -855,19 +862,22 @@ with tabs[3]:
       <div class="{verdict_class}">{verdict_emoji_map[verdict]} {verdict}</div>
       <div style="color:#64748b;font-size:0.8rem;margin-top:6px">QC Decision</div>
     </div>""", unsafe_allow_html=True)
-    col_v2.metric("Ensemble Score", f"{ens:.3f}",
+    col_v2.metric("Fault Score (Ensemble)", f"{ens:.3f}",
                    delta=f"Threshold: {fault_threshold:.2f}",
                    delta_color="inverse" if ens > fault_threshold else "normal")
-    col_v3.metric("Flagged patches", f"{int(np.sum(R['hmap'] > 0.6) / R['hmap'].size * 100):.0f}%",
+    col_v3.metric("Flagged patches", f"{int(np.sum(R['hmap'] > 0.5) / R['hmap'].size * 100):.0f}%",
                    help="% of 8×8 spatial patches above anomaly threshold")
 
     st.divider()
     col_s, col_h = st.columns(2)
 
     with col_s:
-        # Score bars
-        st.markdown("**Anomaly Scores — All Detectors**")
-        all_methods = list(R['scores'].keys())
+        # Score bars — filtered by sidebar selection
+        st.markdown("**Anomaly Scores — Selected Detectors**")
+        # Only show methods that user selected
+        all_methods = [m for m in m03_selected if m in R['scores']] or list(R['scores'].keys())
+        if not all_methods:
+            all_methods = list(R['scores'].keys())   # fallback: show all
         all_scores  = [R['scores'][m] for m in all_methods]
         bar_colors  = ['#10b981' if s < 0.35 else '#f59e0b' if s < 0.55 else '#ef4444'
                         for s in all_scores]
@@ -886,7 +896,7 @@ with tabs[3]:
         st.plotly_chart(fig_scores, use_container_width=True)
 
         # Benchmark reference
-        st.markdown("**Your Module 03 Benchmark (616-image dataset)**")
+        st.markdown("**Module 03 Benchmark (your 616-image unsupervised study)**")
         bench_df = pd.DataFrame({
             'Method': ['Isolation Forest ⭐','Local Outlier Factor','One-Class SVM','Classical Ensemble',
                        'CAE (Feature-Space)','PatchCore','MobileNet Recon','EfficientNet Recon',
@@ -1015,17 +1025,107 @@ with tabs[4]:
         {'Module':'02 — Weave','Method':'Probabilistic Grammar v5',
          'Result':R['pred'],'Metric':f"{R['conf']:.0%} confidence",
          'Status':'✅ Done' if R['conf']>0.6 else '⚠️ Low conf'},
-        {'Module':'03 — Fault','Method':'Classical Ensemble (IF+LOF+SVM)',
+        {'Module':'03 — Fault','Method':'Physics-Driven Ensemble (Color+Structural+Texture)',
          'Result':R['verdict'],'Metric':f"Score={ens:.3f}",
          'Status':'✅ PASS' if R['verdict']=='PASS' else '⚠️ REVIEW' if R['verdict']=='REVIEW' else '❌ FAULT'},
     ])
     st.dataframe(summary, use_container_width=True, hide_index=True)
 
-    # Export button
+    # Export button — rich CSV with all results, clean characters
     st.divider()
-    if st.button("📥 Download Report as CSV"):
-        csv = summary.to_csv(index=False)
-        st.download_button("Download CSV", csv, "fabriciq_report.csv", "text/csv")
+    if st.button("📥 Download Full Report as CSV"):
+        def clean(s):
+            """Remove emoji and replace special chars for universal CSV compatibility."""
+            import unicodedata, re
+            s = str(s)
+            # Remove emoji (characters outside Basic Multilingual Plane or in emoji ranges)
+            s = re.sub(r'[^\x00-\x7F\u00C0-\u024F\u0370-\u03FF\u2010-\u2015]', '', s)
+            s = s.replace('—', '-').replace('⭐', '*').replace('✅', 'OK')
+            s = s.replace('⚠️', 'WARN').replace('❌', 'FAIL').strip()
+            return s
+
+        # Gather all M01 results
+        m01_rows = []
+        for m_name, m_data in R.get('ww', {}).items():
+            m01_rows.append({
+                'Module': '01 - Warp/Weft',
+                'Method': clean(m_name),
+                'Warp_px': round(m_data.get('warp', 0), 2),
+                'Weft_px': round(m_data.get('weft', 0), 2),
+                'WF_Ratio': round(m_data.get('warp', 0) / (m_data.get('weft', 0) + 1e-8), 3),
+                'Note': clean(m_data.get('note', '')),
+            })
+
+        # M02 results
+        wf = R.get('wf', {})
+        m02_rows = []
+        for m_name, m_res in R.get('m02_results', {}).items():
+            m02_rows.append({
+                'Module': '02 - Weave Pattern',
+                'Method': clean(m_name),
+                'Prediction': m_res.get('pred', ''),
+                'Confidence_pct': round(m_res.get('conf', 0) * 100, 1),
+                'Plain_Weave_pct': round(m_res.get('probs', {}).get('Plain Weave', 0) * 100, 1),
+                'Twill21_pct': round(m_res.get('probs', {}).get('2/1 Twill', 0) * 100, 1),
+                'Twill31_pct': round(m_res.get('probs', {}).get('3/1 Twill', 0) * 100, 1),
+            })
+
+        # M03 results
+        m03_rows = []
+        for m_name, score in R.get('scores', {}).items():
+            m03_rows.append({
+                'Module': '03 - Fault Detection',
+                'Method': clean(m_name),
+                'Anomaly_Score': round(score, 4),
+                'Verdict': R.get('verdict', ''),
+                'Threshold': fault_threshold,
+            })
+
+        # Structural features
+        feat_rows = [{
+            'Module': '02 - Features',
+            'Feature': k,
+            'Value': round(float(v), 5) if isinstance(v, (int, float)) else str(v),
+        } for k, v in wf.items()]
+
+        # Combine into one comprehensive CSV with section headers
+        import io
+        buf = io.StringIO()
+        # Write with UTF-8 BOM for Excel compatibility
+        buf.write('\ufeff')   # BOM
+        buf.write('FabricIQ Integrated QC Report\n')
+        buf.write(f'Image analysis timestamp,{pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")}\n')
+        buf.write(f'Weave verdict,{R.get("pred", "")},{R.get("conf", 0)*100:.1f}% confidence\n')
+        buf.write(f'Fault verdict,{R.get("verdict", "")},Ensemble score={R.get("scores", {}).get("Classical Ensemble", 0):.4f}\n')
+        buf.write('\n')
+
+        if m01_rows:
+            buf.write('MODULE 01 - WARP/WEFT THREAD COUNT\n')
+            pd.DataFrame(m01_rows).to_csv(buf, index=False)
+            buf.write('\n')
+
+        if m02_rows:
+            buf.write('MODULE 02 - WEAVE PATTERN CLASSIFICATION\n')
+            pd.DataFrame(m02_rows).to_csv(buf, index=False)
+            buf.write('\n')
+
+        if m03_rows:
+            buf.write('MODULE 03 - FAULT DETECTION\n')
+            pd.DataFrame(m03_rows).to_csv(buf, index=False)
+            buf.write('\n')
+
+        if feat_rows:
+            buf.write('MODULE 02 - STRUCTURAL FEATURES\n')
+            pd.DataFrame(feat_rows).to_csv(buf, index=False)
+
+        csv_data = buf.getvalue()
+        st.download_button(
+            "Download Full CSV",
+            csv_data.encode('utf-8-sig'),  # utf-8 with BOM — opens correctly in Excel
+            "fabriciq_report.csv",
+            "text/csv",
+        )
+        st.success("CSV ready — all modules, clean characters, Excel-compatible (UTF-8 BOM)")
 
 
 # ───────────────────────────────────────────────────────────────
