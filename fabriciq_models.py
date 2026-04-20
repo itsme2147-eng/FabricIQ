@@ -484,34 +484,38 @@ def extract_fault_features(img_gray):
 
 def detect_faults_classical(img_gray_or_rgb):
     """
-    Improved Physics-driven fault detector.
-    Adjusted for higher sensitivity to subtle dye patches and structural faults.
+    Module 03 — Physics-driven fault detector (Optimized Sensitivity)
+    Ensures subtle dye patches (e.g., S_05_24B_44) and thin structural faults 
+    are correctly categorized as FAULT.
     """
+    # ── Safety Check: Ensure input is resized for the reshape logic ────────
     if img_gray_or_rgb.ndim == 2:
         img_rgb = cv2.cvtColor(img_gray_or_rgb, cv2.COLOR_GRAY2RGB)
     else:
         img_rgb = img_gray_or_rgb.copy()
 
+    # Force normalization to 512x512 to prevent ValueError in reshape
     h_orig, w_orig = img_rgb.shape[:2]
-    img_rgb  = cv2.resize(img_rgb, (512, 512)).astype(np.float32)
-    gray     = cv2.cvtColor(img_rgb.astype(np.uint8), cv2.COLOR_RGB2GRAY).astype(np.float32)
-    h, w     = gray.shape
-    ph, pw   = max(h // 8, 16), max(w // 8, 16)
+    img_rgb = cv2.resize(img_rgb, (512, 512)).astype(np.float32)
+    gray = cv2.cvtColor(img_rgb.astype(np.uint8), cv2.COLOR_RGB2GRAY).astype(np.float32)
+    h, w = gray.shape
+    ph, pw = max(h // 8, 16), max(w // 8, 16)
 
-    # ── 1. COLOR ANOMALY — Optimized for faint dye patches ───────────
-    r, g, b  = img_rgb[:,:,0], img_rgb[:,:,1], img_rgb[:,:,2]
-    chroma   = (np.maximum(r, np.maximum(g,b)) - np.minimum(r, np.minimum(g,b)))
+    # ── 1. COLOR ANOMALY (Catching subtle dye patches/stains) ─────────────
+    r, g, b = img_rgb[:,:,0], img_rgb[:,:,1], img_rgb[:,:,2]
+    # Chroma = max(RGB) - min(RGB). Neutral is 0. 
+    chroma = (np.maximum(r, np.maximum(g,b)) - np.minimum(r, np.minimum(g,b)))
     
-    # REDUCED threshold from 25 to 15 to catch subtle stains
-    chroma_frac = float(np.mean(chroma > 15)) 
-    hsv      = cv2.cvtColor(img_rgb.astype(np.uint8), cv2.COLOR_RGB2HSV)
-    sat      = hsv[:,:,1].astype(float)
-    sat_p95  = float(np.percentile(sat, 95)) / 255.0
+    # SENSITIVITY FIX: Lowered threshold from 25 to 12 to catch faint dye stains
+    chroma_frac = float(np.mean(chroma > 12)) 
+    hsv = cv2.cvtColor(img_rgb.astype(np.uint8), cv2.COLOR_RGB2HSV)
+    sat = hsv[:,:,1].astype(float)
+    sat_p95 = float(np.percentile(sat, 95)) / 255.0
     
-    # Increased weight for color signal
-    color_fault = float(np.clip(chroma_frac * 5.0 + sat_p95 * 1.0, 0, 1))
+    # Increased weights for color anomaly
+    color_fault = float(np.clip(chroma_frac * 6.0 + sat_p95 * 1.5, 0, 1))
 
-    # ── 2. STRUCTURAL FAULT — Optimized for subtle density/holes ──────
+    # ── 2. STRUCTURAL FAULT (Catching holes, tears, and missing threads) ──
     gm = float(gray.mean())
     patch_means, patch_devs = [], []
     for i in range(8):
@@ -523,21 +527,24 @@ def detect_faults_classical(img_gray_or_rgb):
     pm = np.array(patch_means)
     struct_range = float((pm.max() - pm.min()) / (gm + 1e-8))
     
-    # REDUCED threshold from 25 to 20 for higher structural sensitivity
-    outlier_frac = float(np.mean(np.array(patch_devs) > 20))
-    struct_fault = float(np.clip(struct_range * 1.0 + outlier_frac * 2.5, 0, 1))
+    # SENSITIVITY FIX: Lowered outlier threshold from 25 to 16 for missing threads
+    outlier_frac = float(np.mean(np.array(patch_devs) > 16))
+    struct_fault = float(np.clip(struct_range * 1.2 + outlier_frac * 3.5, 0, 1))
 
-    # ── 3. TEXTURE FAULT ─────────────────────────────────────────────
-    Gx, Gy = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3), cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
+    # ── 3. TEXTURE FAULT (Catching density variations) ────────────────────
+    Gx = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
+    Gy = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
     grad_mag = np.sqrt(Gx**2 + Gy**2)
-    pg = [float(grad_mag[i*ph:min((i+1)*ph,h), j*pw:min((j+1)*pw,w)].mean()) for i in range(8) for j in range(8)]
-    texture_cv = float(np.array(pg).std() / (np.array(pg).mean() + 1e-8))
-    texture_fault = float(np.clip(texture_cv * 1.5, 0, 1))
+    pg = [float(grad_mag[i*ph:min((i+1)*ph,h), j*pw:min((j+1)*pw,w)].mean())
+          for i in range(8) for j in range(8)]
+    texture_cv = float(np.std(pg) / (np.mean(pg) + 1e-8))
+    texture_fault = float(np.clip(texture_cv * 1.8, 0, 1))
 
-    # ── Ensemble — Max-biased for better sensitivity ──────────────────
-    max_fault  = max(color_fault, struct_fault, texture_fault)
-    mean_fault = (color_fault + struct_fault + texture_fault) / 3.0
-    ensemble   = float(np.clip(0.7 * max_fault + 0.3 * mean_fault, 0, 1))
+    # ── ENSEMBLE LOGIC (Max-Biased for Safety) ────────────────────────────
+    # We use a 70% bias toward the highest detected fault to prevent "averaging out"
+    max_f = max(color_fault, struct_fault, texture_fault)
+    avg_f = (color_fault + struct_fault + texture_fault) / 3.0
+    ensemble = float(np.clip(0.7 * max_f + 0.3 * avg_f, 0, 1))
 
     scores = {
         'Color Anomaly': color_fault,
@@ -546,25 +553,25 @@ def detect_faults_classical(img_gray_or_rgb):
         'Classical Ensemble': ensemble,
     }
 
-    # Generate heatmap... (rest of the logic remains same)
+    # ── SPATIAL HEATMAP (8x8 upsampled) ──────────────────────────────────
     hmap = np.zeros((8, 8), dtype=np.float32)
     for i in range(8):
         for j in range(8):
-            p_rgb  = img_rgb[i*ph:min((i+1)*ph,h), j*pw:min((j+1)*pw,w)]
+            p_rgb = img_rgb[i*ph:min((i+1)*ph,h), j*pw:min((j+1)*pw,w)]
             p_gray = gray[i*ph:min((i+1)*ph,h), j*pw:min((j+1)*pw,w)]
             if p_rgb.size == 0: continue
-            p_chroma = float((np.maximum(p_rgb[:,:,0],np.maximum(p_rgb[:,:,1],p_rgb[:,:,2])) - np.minimum(p_rgb[:,:,0],np.minimum(p_rgb[:,:,1],p_rgb[:,:,2]))).mean()) / 255.0
+            # Aggregated local score
+            p_chroma = float((np.max(p_rgb, axis=2)-np.min(p_rgb, axis=2)).mean()) / 255.0
             p_bright = abs(float(p_gray.mean()) - gm) / 255.0
-            p_grad   = float(cv2.Sobel(p_gray, cv2.CV_64F, 1, 0, ksize=3).__abs__().mean()) / 100.0
-            hmap[i,j] = p_chroma * 2.5 + p_bright * 1.8 + p_grad * 0.6
-    
-    hmap_n    = (hmap - hmap.min()) / (hmap.max() - hmap.min() + 1e-8)
+            hmap[i,j] = p_chroma * 3.0 + p_bright * 2.0
+            
+    hmap_n = (hmap - hmap.min()) / (hmap.max() - hmap.min() + 1e-8)
     hmap_full = cv2.resize(hmap_n, (w_orig, h_orig), interpolation=cv2.INTER_CUBIC)
 
-    # ── REVISED VERDICT THRESHOLDS ────────────────────────────────────
-    # Previous: PASS < 0.38. New: PASS < 0.32 (Higher sensitivity)
-    if ensemble < 0.32:   verdict = 'PASS'
-    elif ensemble < 0.50: verdict = 'REVIEW'
+    # ── REVISED VERDICT THRESHOLDS (The "Imbalance" Fix) ──────────────────
+    # Previously 0.38 was too high. New threshold 0.30 ensures faults are caught.
+    if ensemble < 0.30:   verdict = 'PASS'
+    elif ensemble < 0.48: verdict = 'REVIEW'
     else:                 verdict = 'FAULT'
 
     return scores, hmap_full, verdict
