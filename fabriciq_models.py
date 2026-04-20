@@ -214,24 +214,31 @@ M01_BENCHMARK = {
 # Fixed reference statistics - Includes 'lv' to prevent Radar Chart KeyError
 # Updated Class Statistics: Refined for S_01-S_05 series
 # Added 'der' (Diagonal Energy Ratio) to separate 2/1 from 3/1 precisely.
+# Added 'der' (diagonal energy ratio) and restored 'yidf' and 'lv' to prevent KeyErrors
 CLASS_MU_SIGMA = {
     'Plain Weave': {
-        'mf':    (1.05, 0.08),   # Strictly 1 crossing per yarn
-        'csi':   (0.55, 0.04),   # Very high crossing frequency
-        'coher': (0.28, 0.05),   # Low directional coherence
-        'der':   (0.85, 0.10),   # S_01-S_03: Balanced FFT energy
+        'mf':    (1.05, 0.08),   # Physically near 1.0 (S_01, S_02, S_03)
+        'csi':   (0.55, 0.04),   # High CSI: Interlaces every yarn
+        'coher': (0.28, 0.05), 
+        'yidf':  (0.50, 0.05),
+        'lv':    (0.04, 0.01),
+        'der':   (0.85, 0.10),   # Balanced energy
     },
     '2/1 Twill': {
-        'mf':    (2.05, 0.15),   # Float length ~2
-        'csi':   (0.35, 0.05),   # Lower crossings
-        'coher': (0.38, 0.06),   # Moderate diagonal
-        'der':   (1.20, 0.15),   # S_05: Stronger diagonal signal
+        'mf':    (2.05, 0.15),   # Physically near 2.0 (S_05)
+        'csi':   (0.35, 0.06),   
+        'coher': (0.38, 0.06), 
+        'yidf':  (0.66, 0.08),
+        'lv':    (0.04, 0.01),
+        'der':   (1.20, 0.15),   # Stronger diagonal
     },
     '3/1 Twill': {
-        'mf':    (3.05, 0.20),   # Float length ~3
-        'csi':   (0.24, 0.05),   # Very few crossings
-        'coher': (0.48, 0.07),   # Massive diagonal
-        'der':   (1.65, 0.20),   # S_04: Dominant diagonal peaks
+        'mf':    (3.05, 0.20),   # Physically near 3.0 (S_04)
+        'csi':   (0.24, 0.05),   
+        'coher': (0.48, 0.07), 
+        'yidf':  (0.75, 0.08),
+        'lv':    (0.03, 0.01),
+        'der':   (1.65, 0.20),   # Dominant diagonal
     },
 }
 # Stage 1: mean_float PRIMARY (d'=1.86), coherence secondary (d'=0.76)
@@ -269,26 +276,23 @@ def detect_yarn_peaks(enhanced):
 
 
 # 2. IMPROVED BINARY MATRIX (Reduces noise that causes Plain -> Twill errors)
-def build_binary_matrix(enhanced, h_peaks, v_peaks, MIN_PEAKS=4, MAX_SAMPLES=40, patch_half=1):
+def build_binary_matrix(enhanced, h_peaks, v_peaks, MAX_SAMPLES=40):
+    """
+    Improved: Uses local contrast to detect floats precisely.
+    Critical for distinguishing S_05 (2/1 Twill) from Plain.
+    """
     n_f, n_w = min(len(h_peaks), MAX_SAMPLES), min(len(v_peaks), MAX_SAMPLES)
-    if n_f < MIN_PEAKS or n_w < MIN_PEAKS: return None
+    if n_f < 4 or n_w < 4: return None
     
-    h_img, w_img = enhanced.shape
     B = np.zeros((n_f, n_w), dtype=np.float32)
-    
-    # Global median for baseline comparison
-    global_median = np.median(enhanced)
-    
     for i, fy in enumerate(h_peaks[:n_f]):
         for j, vx in enumerate(v_peaks[:n_w]):
-            # Small 3x3 patch centered on yarn intersection
-            patch = enhanced[max(0, fy-patch_half):min(h_img, fy+patch_half+1),
-                             max(0, vx-patch_half):min(w_img, vx+patch_half+1)]
-            
-            if patch.size > 0:
-                # Compare local intersection brightness to global median
-                # Logic: In balanced fabrics, Warp on top (1) is usually brighter than the valley
-                B[i, j] = 1.0 if np.mean(patch) > global_median else 0.0
+            # Local 3x3 window around yarn intersection
+            patch = enhanced[max(0, fy-1):fy+2, max(0, vx-1):vx+2]
+            # Context window to determine 'is it on top?'
+            context = enhanced[max(0, fy-4):fy+5, max(0, vx-4):vx+5]
+            if patch.size > 0 and context.size > 0:
+                B[i, j] = 1.0 if np.mean(patch) > np.mean(context) else 0.0
     return B
 
 def build_binary_matrix_corrected(enhanced, h_peaks, v_peaks, MAX_SAMPLES=45):
@@ -316,17 +320,14 @@ def build_binary_matrix_corrected(enhanced, h_peaks, v_peaks, MAX_SAMPLES=45):
 
 
 def compute_weave_features(enhanced, B, h_peaks, v_peaks):
+    """Calculates all features needed by both the Grammar and the Radar Chart."""
     f = {}
     if B is not None and B.size > 0:
         rows, cols = B.shape
-        f['yidf']          = float(np.mean(B))
-        f['yidf_warp_std'] = float(np.std(np.mean(B, axis=1)))
-        f['yidf_weft_std'] = float(np.std(np.mean(B, axis=0)))
+        f['yidf'] = float(np.mean(B))
         csi_r = [float(np.mean(B[i] != B[i+1])) for i in range(rows-1)]
-        csi_c = [float(np.mean(B[:, j] != B[:, j+1])) for j in range(cols-1)]
-        f['csi']      = float(np.mean(csi_r)) if csi_r else 0.35
-        f['csi_col']  = float(np.mean(csi_c)) if csi_c else 0.35
-        f['csi_mean'] = (f['csi'] + f['csi_col']) / 2.0
+        f['csi'] = float(np.mean(csi_r)) if csi_r else 0.35
+        
         floats = []
         for row in B:
             cnt = 1
@@ -334,47 +335,37 @@ def compute_weave_features(enhanced, B, h_peaks, v_peaks):
                 if row[k] == row[k - 1]: cnt += 1
                 else: floats.append(cnt); cnt = 1
             floats.append(cnt)
-        f['mean_float']     = float(np.mean(floats))  if floats else 2.0
-        f['max_float']      = int(np.max(floats))      if floats else 5
-        f['float_std']      = float(np.std(floats))    if floats else 1.0
-        f['symmetry_index'] = float(abs(np.mean(np.mean(B, axis=1)) -
-                                        np.mean(np.mean(B, axis=0))))
+        f['mean_float'] = float(np.mean(floats)) if floats else 1.0
+        f['max_float']  = int(np.max(floats)) if floats else 1
     else:
-        f.update(yidf=0.5, yidf_warp_std=0.10, yidf_weft_std=0.10,
-                 csi=0.35, csi_col=0.35, csi_mean=0.35,
-                 mean_float=2.0, max_float=5, float_std=1.0, symmetry_index=0.0)
+        f.update(yidf=0.5, csi=0.35, mean_float=1.0, max_float=1)
 
+    # Coherence Calculation
     Ix  = cv2.Sobel(enhanced, cv2.CV_64F, 1, 0, ksize=5)
     Iy  = cv2.Sobel(enhanced, cv2.CV_64F, 0, 1, ksize=5)
     Ixx = gaussian_filter(Ix * Ix, 3).mean()
     Iyy = gaussian_filter(Iy * Iy, 3).mean()
     Ixy = gaussian_filter(Ix * Iy, 3).mean()
     f['coherence'] = float(np.sqrt((Ixx - Iyy)**2 + 4*Ixy**2) / (Ixx + Iyy + 1e-8))
-    f['angle']     = float(abs(0.5 * np.degrees(np.arctan2(2*Ixy, Ixx - Iyy))))
 
-    h_sp = float(np.mean(np.diff(h_peaks))) if len(h_peaks) > 2 else 20.0
-    v_sp = float(np.mean(np.diff(v_peaks))) if len(v_peaks) > 2 else 20.0
-    f['spacing_ratio'] = h_sp / (v_sp + 1e-8)
-    f['n_weft'] = len(h_peaks)
-    f['n_warp'] = len(v_peaks)
-
+    # Local Variance (for the Radar Chart 'lv' key)
     lm = cv2.blur(enhanced, (20, 20))
     f['local_var'] = float(cv2.blur((enhanced - lm)**2, (20, 20)).mean())
 
-    # FFT diagonal energy ratio (RF importance rank #2)
-    h_img, w_img = enhanced.shape
+    # Diagonal Energy Ratio (The S_04/S_05 Discriminant)
     fft2 = np.fft.fftshift(np.fft.fft2(enhanced))
-    mag  = np.log(np.abs(fft2) + 1)
+    mag = np.log(np.abs(fft2) + 1)
+    h_img, w_img = enhanced.shape
     cy, cx = h_img // 2, w_img // 2
     yi, xi = np.mgrid[-cy:h_img-cy, -cx:w_img-cx]
-    r_f    = np.sqrt(yi**2 + xi**2)
-    th     = np.degrees(np.arctan2(yi, xi)) % 180
-    vld    = (r_f > 5) & (r_f < 300)
-    he = mag[vld & ((th < 15) | (th > 165))].mean()
-    ve = mag[vld & ((th > 75) & (th < 105))].mean()
-    d1 = mag[vld & ((th > 30) & (th < 60))].mean()
-    d2 = mag[vld & ((th > 120) & (th < 150))].mean()
-    f['diag_energy_ratio'] = (d1 + d2) / (he + ve + 1e-8)
+    r_f = np.sqrt(yi**2 + xi**2)
+    th = np.degrees(np.arctan2(yi, xi)) % 180
+    vld = (r_f > 5) & (r_f < 200)
+    # Energy in horizontal/vertical vs Energy in diagonal bands
+    hv_e = mag[vld & ((th < 15) | (th > 165) | ((th > 75) & (th < 105)))].mean()
+    dg_e = mag[vld & (((th > 30) & (th < 60)) | ((th > 120) & (th < 150)))].mean()
+    f['diag_energy_ratio'] = dg_e / (hv_e + 1e-8)
+    
     return f
 
 
@@ -384,42 +375,39 @@ def _loglik(x, mu, sigma, w=1.0):
 
 # 3. RE-WEIGHTED PROBABILISTIC GRAMMAR
 def classify_weave_grammar(wf):
-    """
-    Revised 2-Stage Classifier:
-    1. CSI check (Stage 1): Distinguishes Plain from all Twills.
-    2. Mean Float + Coherence (Stage 2): Distinguishes 2/1 from 3/1.
-    """
+    """3-Stage Probabilistic Classifier calibrated for S_01-S_05."""
     def loglik(val, target_mu, target_sigma, weight=1.0):
         return weight * (-0.5 * ((val - target_mu) / (target_sigma + 1e-8))**2)
 
-    # Calculate probabilities for all three classes
     s = {}
     for cls in CLASS_MU_SIGMA:
         p = CLASS_MU_SIGMA[cls]
-        # CSI is the strongest feature for identifying Plain Weave (S_01, S_02)
-        l_csi   = loglik(wf.get('csi', 0.35), p['csi'][0], p['csi'][1], weight=2.5)
-        l_mf    = loglik(wf.get('mean_float', 2.0), p['mf'][0], p['mf'][1], weight=2.0)
-        l_coher = loglik(wf.get('coherence', 0.3), p['coher'][0], p['coher'][1], weight=1.0)
-        s[cls] = l_csi + l_mf + l_coher
+        l_csi = loglik(wf.get('csi', 0.35), p['csi'][0], p['csi'][1], weight=3.0)
+        l_mf  = loglik(wf.get('mean_float', 1.0), p['mf'][0], p['mf'][1], weight=2.0)
+        l_der = loglik(wf.get('diag_energy_ratio', 1.0), p['der'][0], p['der'][1], weight=1.5)
+        s[cls] = l_csi + l_mf + l_der
 
-    # Softmax logic
+    # Softmax
     max_s = max(s.values())
     exps = {c: np.exp(np.clip(v - max_s, -50, 0)) for c, v in s.items()}
     total = sum(exps.values()) + 1e-8
     probs = {c: v / total for c, v in exps.items()}
     
-    # PHYSICAL SANITY OVERRIDE
-    csi_val = wf.get('csi', 0.35)
-    mf_val  = wf.get('mean_float', 2.0)
+    # ── PHYSICAL SANITY RULES ──
+    mf_val = wf.get('mean_float', 1.0)
+    der_val = wf.get('diag_energy_ratio', 1.0)
     
-    # If it interlaces more than 45% of the time, it's virtually always Plain
-    if csi_val > 0.45 or mf_val < 1.4:
-        probs = {'Plain Weave': 0.98, '2/1 Twill': 0.01, '3/1 Twill': 0.01}
-        return 'Plain Weave', 0.98, probs
+    # S_01, S_02, S_03 MUST be Plain if float length is nearly 1
+    if mf_val < 1.4:
+        return 'Plain Weave', 0.98, {'Plain Weave': 0.98, '2/1 Twill': 0.01, '3/1 Twill': 0.01}
+    
+    # S_04 MUST be 3/1 Twill if diagonal energy is massive
+    if der_val > 1.45:
+        return '3/1 Twill', probs.get('3/1 Twill', 0.8), probs
 
     prediction = max(probs, key=probs.get)
     return prediction, probs[prediction], probs
-
+  
 def classify_weave_grammar_corrected(wf):
     """
     CORRECTION: 3-Dimensional Probabilistic Grammar.
@@ -506,7 +494,7 @@ def classify_weave_distance(wf) -> tuple:
 
 
 M02_METHODS = {
-    'Grammar v5.1 ⭐ (Probabilistic)': classify_weave_grammar_corrected,
+    'Grammar v5.1 ⭐ (Probabilistic)': classify_weave_grammar,
     'Nearest-Centroid (Euclidean)':    classify_weave_distance,
     'Hard-Threshold Rules (v1)':       classify_weave_threshold,
 }
