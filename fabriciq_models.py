@@ -211,27 +211,28 @@ M01_BENCHMARK = {
 # 1. RECALIBRATED STATISTICS (Aligned with physical fabric properties)
 # Plain should have float lengths ~1.0, Twill 2/1 ~2.0, Twill 3/1 ~3.0
 # Updated CLASS_MU_SIGMA with ALL keys to prevent KeyError in Radar Charts
+# Fixed reference statistics - Includes 'lv' to prevent Radar Chart KeyError
 CLASS_MU_SIGMA = {
     'Plain Weave': {
-        'mf':    (1.15, 0.15),   # Mean Float: Physically near 1.0
-        'coher': (0.32, 0.08), 
-        'csi':   (0.48, 0.05),   
+        'mf':    (1.10, 0.10),   # Physically near 1.0
+        'csi':   (0.52, 0.05),   # High CSI: Crosses every yarn
+        'coher': (0.33, 0.08), 
         'yidf':  (0.50, 0.05),
-        'lv':    (0.04, 0.01),   # Added back to prevent KeyError
+        'lv':    (0.04, 0.01),
     },
     '2/1 Twill': {
-        'mf':    (2.10, 0.25),   # Mean Float: Physically near 2.0
-        'coher': (0.22, 0.06), 
-        'csi':   (0.33, 0.06),
+        'mf':    (2.10, 0.20),   # Physically near 2.0
+        'csi':   (0.35, 0.06),   # Lower CSI
+        'coher': (0.24, 0.06), 
         'yidf':  (0.66, 0.08),
-        'lv':    (0.04, 0.01),   # Added back to prevent KeyError
+        'lv':    (0.04, 0.01),
     },
     '3/1 Twill': {
-        'mf':    (3.10, 0.35),   # Mean Float: Physically near 3.0
+        'mf':    (3.10, 0.30),   # Physically near 3.0
+        'csi':   (0.25, 0.06),   # Lowest CSI: Long floats
         'coher': (0.42, 0.08), 
-        'csi':   (0.25, 0.06),   
         'yidf':  (0.75, 0.08),
-        'lv':    (0.03, 0.01),   # Added back to prevent KeyError
+        'lv':    (0.03, 0.01),
     },
 }
 # Stage 1: mean_float PRIMARY (d'=1.86), coherence secondary (d'=0.76)
@@ -269,25 +270,26 @@ def detect_yarn_peaks(enhanced):
 
 
 # 2. IMPROVED BINARY MATRIX (Reduces noise that causes Plain -> Twill errors)
-def build_binary_matrix(enhanced, h_peaks, v_peaks, MIN_PEAKS=4, MAX_SAMPLES=40, patch_half=2):
+def build_binary_matrix(enhanced, h_peaks, v_peaks, MIN_PEAKS=4, MAX_SAMPLES=40, patch_half=1):
     n_f, n_w = min(len(h_peaks), MAX_SAMPLES), min(len(v_peaks), MAX_SAMPLES)
-    if n_f < MIN_PEAKS or n_w < MIN_PEAKS:
-        return None
+    if n_f < MIN_PEAKS or n_w < MIN_PEAKS: return None
     
     h_img, w_img = enhanced.shape
     B = np.zeros((n_f, n_w), dtype=np.float32)
     
-    # Use localized adaptive thresholding instead of global median
+    # Global median for baseline comparison
+    global_median = np.median(enhanced)
+    
     for i, fy in enumerate(h_peaks[:n_f]):
         for j, vx in enumerate(v_peaks[:n_w]):
-            y1, y2 = max(0, fy-patch_half), min(h_img, fy+patch_half+1)
-            x1, x2 = max(0, vx-patch_half), min(w_img, vx+patch_half+1)
-            patch = enhanced[y1:y2, x1:x2]
+            # Small 3x3 patch centered on yarn intersection
+            patch = enhanced[max(0, fy-patch_half):min(h_img, fy+patch_half+1),
+                             max(0, vx-patch_half):min(w_img, vx+patch_half+1)]
             
             if patch.size > 0:
-                # A peak is 1 (Warp) if it's brighter than its immediate surroundings
-                local_env = enhanced[max(0, fy-5):min(h_img, fy+6), max(0, vx-5):min(w_img, vx+6)]
-                B[i, j] = 1.0 if np.mean(patch) > np.mean(local_env) else 0.0
+                # Compare local intersection brightness to global median
+                # Logic: In balanced fabrics, Warp on top (1) is usually brighter than the valley
+                B[i, j] = 1.0 if np.mean(patch) > global_median else 0.0
     return B
 
 
@@ -361,38 +363,40 @@ def _loglik(x, mu, sigma, w=1.0):
 # 3. RE-WEIGHTED PROBABILISTIC GRAMMAR
 def classify_weave_grammar(wf):
     """
-    Fixed 2-Stage Classifier with Physical Constraints.
-    Stage 1: mean_float determines if it is Plain or Twill.
+    Revised 2-Stage Classifier:
+    1. CSI check (Stage 1): Distinguishes Plain from all Twills.
+    2. Mean Float + Coherence (Stage 2): Distinguishes 2/1 from 3/1.
     """
     def loglik(val, target_mu, target_sigma, weight=1.0):
-        # Gaussian log-likelihood
         return weight * (-0.5 * ((val - target_mu) / (target_sigma + 1e-8))**2)
 
-    scores = {}
+    # Calculate probabilities for all three classes
+    s = {}
     for cls in CLASS_MU_SIGMA:
         p = CLASS_MU_SIGMA[cls]
-        
-        # Use mean_float as the strongest anchor for weave type
-        l_mf    = loglik(wf.get('mean_float', 2.0), p['mf'][0], p['mf'][1], weight=3.0)
+        # CSI is the strongest feature for identifying Plain Weave (S_01, S_02)
+        l_csi   = loglik(wf.get('csi', 0.35), p['csi'][0], p['csi'][1], weight=2.5)
+        l_mf    = loglik(wf.get('mean_float', 2.0), p['mf'][0], p['mf'][1], weight=2.0)
         l_coher = loglik(wf.get('coherence', 0.3), p['coher'][0], p['coher'][1], weight=1.0)
-        l_csi   = loglik(wf.get('csi', 0.35), p['csi'][0], p['csi'][1], weight=1.0)
-        
-        scores[cls] = l_mf + l_coher + l_csi
+        s[cls] = l_csi + l_mf + l_coher
 
-    # Softmax conversion
-    max_s = max(scores.values())
-    exps = {c: np.exp(np.clip(s - max_s, -50, 0)) for c, s in scores.items()}
+    # Softmax logic
+    max_s = max(s.values())
+    exps = {c: np.exp(np.clip(v - max_s, -50, 0)) for c, v in s.items()}
     total = sum(exps.values()) + 1e-8
     probs = {c: v / total for c, v in exps.items()}
     
-    # Logic Override for physical certainty
-    mf_val = wf.get('mean_float', 2.0)
-    if mf_val < 1.4:
-        return 'Plain Weave', 0.98, {'Plain Weave': 0.98, '2/1 Twill': 0.01, '3/1 Twill': 0.01}
+    # PHYSICAL SANITY OVERRIDE
+    csi_val = wf.get('csi', 0.35)
+    mf_val  = wf.get('mean_float', 2.0)
     
+    # If it interlaces more than 45% of the time, it's virtually always Plain
+    if csi_val > 0.45 or mf_val < 1.4:
+        probs = {'Plain Weave': 0.98, '2/1 Twill': 0.01, '3/1 Twill': 0.01}
+        return 'Plain Weave', 0.98, probs
+
     prediction = max(probs, key=probs.get)
     return prediction, probs[prediction], probs
-
 
 # ═══════════════════════════════════════════════════════════════
 # MODULE 02 — ALTERNATIVE CLASSIFIERS (comparison with Grammar v5.1)
