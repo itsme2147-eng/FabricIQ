@@ -210,24 +210,28 @@ M01_BENCHMARK = {
 
 # 1. RECALIBRATED STATISTICS (Aligned with physical fabric properties)
 # Plain should have float lengths ~1.0, Twill 2/1 ~2.0, Twill 3/1 ~3.0
+# Updated CLASS_MU_SIGMA with ALL keys to prevent KeyError in Radar Charts
 CLASS_MU_SIGMA = {
     'Plain Weave': {
         'mf':    (1.15, 0.15),   # Mean Float: Physically near 1.0
         'coher': (0.32, 0.08), 
-        'csi':   (0.48, 0.05),   # High CSI: Frequent interlacements
+        'csi':   (0.48, 0.05),   
         'yidf':  (0.50, 0.05),
+        'lv':    (0.04, 0.01),   # Added back to prevent KeyError
     },
     '2/1 Twill': {
         'mf':    (2.10, 0.25),   # Mean Float: Physically near 2.0
         'coher': (0.22, 0.06), 
         'csi':   (0.33, 0.06),
         'yidf':  (0.66, 0.08),
+        'lv':    (0.04, 0.01),   # Added back to prevent KeyError
     },
     '3/1 Twill': {
         'mf':    (3.10, 0.35),   # Mean Float: Physically near 3.0
         'coher': (0.42, 0.08), 
-        'csi':   (0.25, 0.06),   # Low CSI: Long floats
+        'csi':   (0.25, 0.06),   
         'yidf':  (0.75, 0.08),
+        'lv':    (0.03, 0.01),   # Added back to prevent KeyError
     },
 }
 # Stage 1: mean_float PRIMARY (d'=1.86), coherence secondary (d'=0.76)
@@ -357,39 +361,36 @@ def _loglik(x, mu, sigma, w=1.0):
 # 3. RE-WEIGHTED PROBABILISTIC GRAMMAR
 def classify_weave_grammar(wf):
     """
-    Fixed 2-Stage Classifier
-    Stage 1: mean_float (Weight 0.8) determines if it is Plain or Twill.
-    Stage 2: coherence and csi differentiate Twill subtypes.
+    Fixed 2-Stage Classifier with Physical Constraints.
+    Stage 1: mean_float determines if it is Plain or Twill.
     """
     def loglik(val, target_mu, target_sigma, weight=1.0):
+        # Gaussian log-likelihood
         return weight * (-0.5 * ((val - target_mu) / (target_sigma + 1e-8))**2)
 
     scores = {}
     for cls in CLASS_MU_SIGMA:
         p = CLASS_MU_SIGMA[cls]
         
-        # PRIMARY FEATURE: Mean Float (The most reliable physical indicator)
-        l_mf = loglik(wf.get('mean_float', 2.0), p['mf'][0], p['mf'][1], weight=2.0)
-        
-        # SECONDARY FEATURES
+        # Use mean_float as the strongest anchor for weave type
+        l_mf    = loglik(wf.get('mean_float', 2.0), p['mf'][0], p['mf'][1], weight=3.0)
         l_coher = loglik(wf.get('coherence', 0.3), p['coher'][0], p['coher'][1], weight=1.0)
-        l_csi = loglik(wf.get('csi', 0.35), p['csi'][0], p['csi'][1], weight=1.0)
+        l_csi   = loglik(wf.get('csi', 0.35), p['csi'][0], p['csi'][1], weight=1.0)
         
         scores[cls] = l_mf + l_coher + l_csi
 
-    # Softmax to get probabilities
+    # Softmax conversion
     max_s = max(scores.values())
-    exps = {c: np.exp(s - max_s) for c, s in scores.items()}
-    total = sum(exps.values())
+    exps = {c: np.exp(np.clip(s - max_s, -50, 0)) for c, s in scores.items()}
+    total = sum(exps.values()) + 1e-8
     probs = {c: v / total for c, v in exps.items()}
     
-    prediction = max(probs, key=probs.get)
+    # Logic Override for physical certainty
+    mf_val = wf.get('mean_float', 2.0)
+    if mf_val < 1.4:
+        return 'Plain Weave', 0.98, {'Plain Weave': 0.98, '2/1 Twill': 0.01, '3/1 Twill': 0.01}
     
-    # Logic Override: If mean float is very close to 1.0, it MUST be Plain
-    if wf.get('mean_float', 2.0) < 1.4:
-        prediction = 'Plain Weave'
-        probs = {'Plain Weave': 0.95, '2/1 Twill': 0.03, '3/1 Twill': 0.02}
-
+    prediction = max(probs, key=probs.get)
     return prediction, probs[prediction], probs
 
 
