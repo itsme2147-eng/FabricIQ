@@ -506,7 +506,7 @@ def classify_weave_distance(wf) -> tuple:
 
 
 M02_METHODS = {
-    'Grammar v5.1 ⭐ (Probabilistic)': classify_weave_grammar__corrected,
+    'Grammar v5.1 ⭐ (Probabilistic)': classify_weave_grammar_corrected,
     'Nearest-Centroid (Euclidean)':    classify_weave_distance,
     'Hard-Threshold Rules (v1)':       classify_weave_threshold,
 }
