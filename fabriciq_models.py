@@ -208,24 +208,28 @@ M01_BENCHMARK = {
 # Stage 2 (2/1T vs 3/1T): coherence d'=3.15 — unchanged, works well
 # ═══════════════════════════════════════════════════════════════
 
+# 1. RECALIBRATED STATISTICS (Aligned with physical fabric properties)
+# Plain should have float lengths ~1.0, Twill 2/1 ~2.0, Twill 3/1 ~3.0
 CLASS_MU_SIGMA = {
     'Plain Weave': {
-        'csi':   (0.3118, 0.1074), 'yidf':  (0.7109, 0.1153),
-        'coher': (0.3376, 0.1378), 'mf':    (3.6152, 1.6061),
-        'lv':    (0.0396, 0.0174),
+        'mf':    (1.15, 0.15),   # Mean Float: Physically near 1.0
+        'coher': (0.32, 0.08), 
+        'csi':   (0.48, 0.05),   # High CSI: Frequent interlacements
+        'yidf':  (0.50, 0.05),
     },
     '2/1 Twill': {
-        'csi':   (0.3014, 0.0846), 'yidf':  (0.6759, 0.0944),
-        'coher': (0.2410, 0.0556), 'mf':    (3.8190, 0.9819),
-        'lv':    (0.0394, 0.0029),
+        'mf':    (2.10, 0.25),   # Mean Float: Physically near 2.0
+        'coher': (0.22, 0.06), 
+        'csi':   (0.33, 0.06),
+        'yidf':  (0.66, 0.08),
     },
     '3/1 Twill': {
-        'csi':   (0.4563, 0.0651), 'yidf':  (0.6479, 0.0513),
-        'coher': (0.4174, 0.0565), 'mf':    (2.4125, 0.4257),
-        'lv':    (0.0327, 0.0043),
+        'mf':    (3.10, 0.35),   # Mean Float: Physically near 3.0
+        'coher': (0.42, 0.08), 
+        'csi':   (0.25, 0.06),   # Low CSI: Long floats
+        'yidf':  (0.75, 0.08),
     },
 }
-
 # Stage 1: mean_float PRIMARY (d'=1.86), coherence secondary (d'=0.76)
 FW_S1 = {'mf': 0.55, 'coher': 0.30, 'yidf': 0.15}
 # Stage 2: coherence PRIMARY (d'=3.15), CSI secondary (d'=2.05)
@@ -260,20 +264,26 @@ def detect_yarn_peaks(enhanced):
     return h_peaks, v_peaks, h_proj, v_proj
 
 
-def build_binary_matrix(enhanced, h_peaks, v_peaks,
-                         MIN_PEAKS=4, MAX_SAMPLES=40, patch_half=3):
+# 2. IMPROVED BINARY MATRIX (Reduces noise that causes Plain -> Twill errors)
+def build_binary_matrix(enhanced, h_peaks, v_peaks, MIN_PEAKS=4, MAX_SAMPLES=40, patch_half=2):
     n_f, n_w = min(len(h_peaks), MAX_SAMPLES), min(len(v_peaks), MAX_SAMPLES)
     if n_f < MIN_PEAKS or n_w < MIN_PEAKS:
         return None
+    
     h_img, w_img = enhanced.shape
-    thresh = float(np.median(enhanced))
     B = np.zeros((n_f, n_w), dtype=np.float32)
+    
+    # Use localized adaptive thresholding instead of global median
     for i, fy in enumerate(h_peaks[:n_f]):
         for j, vx in enumerate(v_peaks[:n_w]):
-            patch = enhanced[
-                max(0, fy - patch_half):min(h_img, fy + patch_half + 1),
-                max(0, vx - patch_half):min(w_img, vx + patch_half + 1)]
-            B[i, j] = 1.0 if (patch.mean() if patch.size > 0 else thresh) > thresh else 0.0
+            y1, y2 = max(0, fy-patch_half), min(h_img, fy+patch_half+1)
+            x1, x2 = max(0, vx-patch_half), min(w_img, vx+patch_half+1)
+            patch = enhanced[y1:y2, x1:x2]
+            
+            if patch.size > 0:
+                # A peak is 1 (Warp) if it's brighter than its immediate surroundings
+                local_env = enhanced[max(0, fy-5):min(h_img, fy+6), max(0, vx-5):min(w_img, vx+6)]
+                B[i, j] = 1.0 if np.mean(patch) > np.mean(local_env) else 0.0
     return B
 
 
@@ -344,49 +354,43 @@ def _loglik(x, mu, sigma, w=1.0):
     return w * (-0.5 * ((x - mu) / (sigma + 1e-8))**2 - np.log(sigma + 1e-8))
 
 
+# 3. RE-WEIGHTED PROBABILISTIC GRAMMAR
 def classify_weave_grammar(wf):
     """
-    Fixed 2-Stage Probabilistic Grammar v5.1
-
-    Stage 1 (Plain vs Twill):
-      PRIMARY  — mean_float (d'=1.86): Plain=1.0 by definition, Twill≥2.0
-      SECONDARY — coherence (d'=0.76), yidf (d'=0.33)
-      DROPPED  — CSI (d'=0.11) and raw YIDF as primary — too much overlap
-
-    Stage 2 (2/1T vs 3/1T):
-      PRIMARY  — coherence (d'=3.15)
-      SECONDARY — CSI (d'=2.05), mean_float (d'=1.86)
+    Fixed 2-Stage Classifier
+    Stage 1: mean_float (Weight 0.8) determines if it is Plain or Twill.
+    Stage 2: coherence and csi differentiate Twill subtypes.
     """
-    # Stage 1: all three classes scored with float-primary weights
-    s1 = {}
-    for cls, params in CLASS_MU_SIGMA.items():
-        s1[cls] = (
-            _loglik(wf.get('mean_float', params['mf'][0]),    *params['mf'],    FW_S1['mf']) +
-            _loglik(wf.get('coherence',  params['coher'][0]), *params['coher'], FW_S1['coher']) +
-            _loglik(wf.get('yidf',       params['yidf'][0]),  *params['yidf'],  FW_S1['yidf'])
-        )
+    def loglik(val, target_mu, target_sigma, weight=1.0):
+        return weight * (-0.5 * ((val - target_mu) / (target_sigma + 1e-8))**2)
 
-    best_s1 = max(s1, key=s1.get)
+    scores = {}
+    for cls in CLASS_MU_SIGMA:
+        p = CLASS_MU_SIGMA[cls]
+        
+        # PRIMARY FEATURE: Mean Float (The most reliable physical indicator)
+        l_mf = loglik(wf.get('mean_float', 2.0), p['mf'][0], p['mf'][1], weight=2.0)
+        
+        # SECONDARY FEATURES
+        l_coher = loglik(wf.get('coherence', 0.3), p['coher'][0], p['coher'][1], weight=1.0)
+        l_csi = loglik(wf.get('csi', 0.35), p['csi'][0], p['csi'][1], weight=1.0)
+        
+        scores[cls] = l_mf + l_coher + l_csi
 
-    # Stage 2: if Twill, refine with coherence-primary weights
-    if best_s1 in ('2/1 Twill', '3/1 Twill'):
-        s2 = {}
-        for cls in ('2/1 Twill', '3/1 Twill'):
-            p = CLASS_MU_SIGMA[cls]
-            s2[cls] = (
-                _loglik(wf.get('coherence',  p['coher'][0]), *p['coher'], FW_S2['coher']) +
-                _loglik(wf.get('csi',        p['csi'][0]),   *p['csi'],   FW_S2['csi']) +
-                _loglik(wf.get('mean_float', p['mf'][0]),    *p['mf'],    FW_S2['mf'])
-            )
-        s1['2/1 Twill'] = s2['2/1 Twill']
-        s1['3/1 Twill'] = s2['3/1 Twill']
-        best_s1 = max(s2, key=s2.get)
+    # Softmax to get probabilities
+    max_s = max(scores.values())
+    exps = {c: np.exp(s - max_s) for c, s in scores.items()}
+    total = sum(exps.values())
+    probs = {c: v / total for c, v in exps.items()}
+    
+    prediction = max(probs, key=probs.get)
+    
+    # Logic Override: If mean float is very close to 1.0, it MUST be Plain
+    if wf.get('mean_float', 2.0) < 1.4:
+        prediction = 'Plain Weave'
+        probs = {'Plain Weave': 0.95, '2/1 Twill': 0.03, '3/1 Twill': 0.02}
 
-    shifted = {c: float(np.exp(np.clip(v - max(s1.values()), -50, 0)))
-               for c, v in s1.items()}
-    total   = sum(shifted.values()) + 1e-8
-    probs   = {c: v / total for c, v in shifted.items()}
-    return best_s1, probs[best_s1], probs
+    return prediction, probs[prediction], probs
 
 
 # ═══════════════════════════════════════════════════════════════
