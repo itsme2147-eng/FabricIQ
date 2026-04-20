@@ -235,7 +235,11 @@ with st.sidebar:
             st.success(f"✅ {uploaded.name} loaded")
     else:
         demo_choice = st.selectbox("Demo fabric:", list(DEMO_IMAGES.keys()))
-        img_gray    = DEMO_IMAGES[demo_choice]()
+        img_raw     = DEMO_IMAGES[demo_choice]()
+        
+        # FIX: Explicitly resize demo image to 512x512 to prevent buffer reshape errors
+        img_gray    = cv2.resize(img_raw, (512, 512)) 
+        
         # Demo images are grayscale — convert to fake RGB (gray replicated 3ch)
         img_rgb_demo = cv2.cvtColor(img_gray, cv2.COLOR_GRAY2RGB)
         st.session_state['img_rgb512'] = img_rgb_demo
