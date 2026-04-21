@@ -384,7 +384,7 @@ border:1px solid #1e2b45;border-radius:6px;padding:10px;margin-bottom:8px">
     st.caption("Dataset: 616 fabric images")
     st.caption("Best M01: Ratio-Consistency (MAE=3.48) ⭐")
     st.caption("Best M02: Grammar v5.1 (≥75% on 616 real scans)")
-    st.caption("Best M03: Physics detector (Color+Structural+Texture) → FAULT on all 6 corpus fault images")
+    st.caption("Best M03: Physics detector (Color+Structural+Texture) → FAULT")
     st.markdown("---")
     st.caption("FabricIQ · PhD Research Dashboard")
     st.caption("Streamlit · Open Source · No install")
